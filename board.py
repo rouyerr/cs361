@@ -1,11 +1,10 @@
-﻿
-import numpy as np
+﻿import numpy as np
 import re
 
 class Board():
 
     PIECE_TO_NUMBER = {'K':6, 'k':-6, 'Q':5,'q':-5, 'R':4,'r':-4,'B':3,'b':-3, 'N':2,'n':-2,'P':1,'p':-1,'.':0}
-    NUMBER_TO_PIECE = {v:k for k,v in PIECE_TO_NUMBER.items()}
+    NUMBER_TO_PIECE = ['.', 'P', 'N', 'B', 'R', 'Q', 'K', 'k', 'q', 'r', 'b', 'n', 'p'] #{v:k for k,v in PIECE_TO_NUMBER.items()}
     NUMBER_TO_PIECE_EMOJI = {6: '♚', -6: '♔', 5: '♛', -5: '♕', 4: '♜', -4: '♖', 3: '♝', -3: '♗', 2: '♞', -2: '♘', 1: '♟', -1: '♙', 0: '.'}
     pks = PIECE_TO_NUMBER.keys()
     
@@ -36,15 +35,14 @@ class Board():
 
     def __init__(self, fen = None):
         self.board  = np.zeros((8,8), dtype = np.int8)
+        self.reverse_view_board = self.board[::-1]
         self.result= -1
         if not fen:
             fen = Board.STARTING_FEN
         self.last_fen = None
         self.init_fen = fen
+        self.current_fen = fen
         self.set_up_chessboard(fen)
-
-
-    
 
     def set_up_chessboard(self, fen_string):
         rank, file = 0, 0
@@ -85,60 +83,43 @@ class Board():
             self.halfmove_clock = int(fen_string[4])
         if fen_string[5]:
             self.move_number= int(fen_string[5])
-        self.update_bitboards()
+        self.init_bitboards()
         return self.board
 
     def export_fen(self):
-        fen_parts = []
-
-        for rank in range(7, -1, -1):
-            empty_squares = 0
-            for file in range(8):
-                piece = self.board[rank][file]
-                if piece == 0:
-                    empty_squares += 1
+        def rank_to_fen(rank):
+            empty = 0
+            fen = ''
+            for piece in rank:
+                if piece:
+                    if empty:
+                        fen += str(empty)
+                        empty = 0
+                    fen += Board.NUMBER_TO_PIECE[piece]
                 else:
-                    if empty_squares > 0:
-                        fen_parts.append(str(empty_squares))
-                        empty_squares = 0
-                    fen_parts.append(Board.NUMBER_TO_PIECE.get(piece))
+                    empty += 1
+            return fen + ('' if not empty else str(empty))
 
-            if empty_squares > 0:
-                fen_parts.append(str(empty_squares))
+        board_fen = '/'.join(rank_to_fen(rank) for rank in self.reverse_view_board)
+        turn_fen = 'w' if self.whites_move else 'b'
+        castling_fen = ''.join([
+            'K' if self.castling_rights & Board.WHITE_KING_CASTLE else '',
+            'Q' if self.castling_rights & Board.WHITE_QUEEN_CASTLE else '',
+            'k' if self.castling_rights & Board.BLACK_KING_CASTLE else '',
+            'q' if self.castling_rights & Board.BLACK_QUEEN_CASTLE else ''
+        ]) or '-'
+        en_passant_fen = '-' if not self.en_passant_square else f"{chr(ord('a') + self.en_passant_square[0])}{self.en_passant_square[1]+1}"
 
-            if rank > 0:
-                fen_parts.append('/')
-        fen_parts = [''.join(fen_parts)]
-        # Players Turn
-        fen_parts.append('w' if self.whites_move else 'b')
-        # Castling
-        castling_rights_str = ''
-        if self.castling_rights & Board.WHITE_KING_CASTLE:
-            castling_rights_str += 'K'
-        if self.castling_rights & Board.WHITE_QUEEN_CASTLE:
-            castling_rights_str += 'Q'
-        if self.castling_rights & Board.BLACK_KING_CASTLE:
-            castling_rights_str += 'k'
-        if self.castling_rights & Board.BLACK_QUEEN_CASTLE:
-            castling_rights_str += 'q'
+        return ' '.join([
+            board_fen,
+            turn_fen,
+            castling_fen,
+            en_passant_fen,
+            str(self.halfmove_clock),
+            str(self.move_number)
+        ])
 
-        fen_parts.append(castling_rights_str or '-')
-
-        # En passant square
-        fen_parts.append(
-            self.coordinate_to_alphanum(self.en_passant_square) if self.en_passant_square else '-'
-        )
-
-        # Halfmove clock
-        fen_parts.append(str(self.halfmove_clock))
-
-        # Move number
-        fen_parts.append(str(self.move_number))
-
-        return ' '.join(fen_parts).strip()
-
-
-    def update_bitboards(self):
+    def init_bitboards(self):
         self.bb_white_pawns = int(((self.board == 1).flatten() << np.arange(64,dtype=np.uint64)).sum())
         self.bb_black_pawns = int(((self.board == -1).flatten() << np.arange(64,dtype=np.uint64)).sum())
         self.bb_white_knights = int(((self.board == 2).flatten() << np.arange(64,dtype=np.uint64)).sum())
@@ -154,6 +135,51 @@ class Board():
         self.bb_white_occupy = self.bb_white_pawns | self.bb_white_knights | self.bb_white_bishops | self.bb_white_rooks | self.bb_white_queens | self.bb_white_king
         self.bb_black_occupy = self.bb_black_pawns | self.bb_black_knights | self.bb_black_bishops | self.bb_black_rooks | self.bb_black_queens | self.bb_black_king
         self.bb_occupy = self.bb_white_occupy | self.bb_black_occupy
+    
+    def update_bitboards(self, from_bb, to_bb, piece):
+        match piece:
+            case 2:   
+                self.bb_white_knights ^= (from_bb | to_bb)
+            case -2:
+                self.bb_black_knights ^= (from_bb | to_bb)
+            case 3:
+                self.bb_white_bishops ^= (from_bb | to_bb)
+            case -3:
+                self.bb_black_bishops ^= (from_bb | to_bb)
+            case 4:
+                self.bb_white_rooks ^= (from_bb | to_bb)
+            case -4:
+                self.bb_black_rooks ^= (from_bb | to_bb)
+            case 5:
+                self.bb_white_queens ^= (from_bb | to_bb)
+            case -5:
+                self.bb_black_queens ^= (from_bb | to_bb)
+            case 6:
+                self.bb_white_king ^= (from_bb | to_bb)
+            case -6:
+                self.bb_black_king ^= (from_bb | to_bb)
+        to_bb_mask = ~to_bb
+        if self.whites_move:
+            self.bb_white_occupy ^= (from_bb | to_bb)
+
+            self.bb_black_pawns &= to_bb_mask
+            self.bb_black_knights &= to_bb_mask
+            self.bb_black_bishops &= to_bb_mask
+            self.bb_black_rooks &= to_bb_mask
+            self.bb_black_queens &= to_bb_mask
+            self.bb_black_occupy &= to_bb_mask
+        else:
+            self.bb_black_occupy ^= (from_bb | to_bb)
+
+            self.bb_white_pawns &= to_bb_mask
+            self.bb_white_knights &= to_bb_mask
+            self.bb_white_bishops &= to_bb_mask
+            self.bb_white_rooks &= to_bb_mask
+            self.bb_white_queens &= to_bb_mask
+            self.bb_white_occupy &= to_bb_mask
+
+        self.bb_occupy = self.bb_white_occupy | self.bb_black_occupy
+
 
     def alphanum_to_coordinate(self, square):
         return (ord(square[0]) - ord('a'), int(square[1])-1)
@@ -168,8 +194,8 @@ class Board():
 
     def bitboard_to_coordinate(self, bitboard):
         if bitboard:
-            square = bin(bitboard).count('0') - 1
-            return square % 8, square // 8
+            index = (bitboard & -bitboard).bit_length() - 1
+            return index % 8, index // 8
         return None
 
     
@@ -178,14 +204,54 @@ class Board():
         from_coord = self.bitboard_to_coordinate(from_bb)
         to_coord = self.bitboard_to_coordinate(to_bb)
         if self.coordinate_to_bitboard(self.en_passant_square) == to_bb:
-            if self.whites_move: 
-                self.board[to_coord[1]-1][to_coord[0]] = 0
-            else:
-                self.board[to_coord[1]+1][to_coord[0]] = 0
-                
-        if not promote:
             self.board[to_coord[1]][to_coord[0]] = self.board[from_coord[1]][from_coord[0]]
+            self.bb_occupy ^= (from_bb | to_bb)
+            if self.whites_move: 
+                self.bb_white_pawns ^= (from_bb | to_bb)
+                self.bb_white_occupy ^= (from_bb | to_bb)
+
+                self.board[to_coord[1]-1][to_coord[0]] = 0
+                self.bb_black_pawns ^= to_bb >> 8
+                self.bb_black_occupy ^= to_bb >> 8
+                self.bb_occupy ^= to_bb >> 8
+            else:
+                self.bb_black_pawns ^= (from_bb | to_bb)
+                self.bb_black_occupy ^= (from_bb | to_bb)
+
+                self.board[to_coord[1]+1][to_coord[0]] = 0
+                self.bb_white_pawns ^= to_bb << 8
+                self.bb_white_occupy ^= to_bb << 8
+                self.bb_occupy ^= to_bb << 8
+                
+        elif not promote:
+            self.board[to_coord[1]][to_coord[0]] = self.board[from_coord[1]][from_coord[0]]
+            to_bb_mask = ~to_bb
+
+            if self.whites_move: 
+                self.bb_white_pawns ^= (from_bb | to_bb)
+                self.bb_white_occupy ^= (from_bb | to_bb)
+
+                self.bb_black_pawns &= to_bb_mask
+                self.bb_black_knights &= to_bb_mask
+                self.bb_black_bishops &= to_bb_mask
+                self.bb_black_rooks &= to_bb_mask
+                self.bb_black_queens &= to_bb_mask
+                self.bb_black_occupy &= to_bb_mask
+            else:
+                self.bb_black_pawns ^= (from_bb | to_bb)
+                self.bb_black_occupy ^= (from_bb | to_bb)
+
+                self.bb_white_pawns &= to_bb_mask
+                self.bb_white_knights &= to_bb_mask
+                self.bb_white_bishops &= to_bb_mask
+                self.bb_white_rooks &= to_bb_mask
+                self.bb_white_queens &= to_bb_mask
+                self.bb_white_occupy &= to_bb_mask
+
+            self.bb_occupy = self.bb_white_occupy | self.bb_black_occupy
+
         else:
+            to_bb_mask = ~to_bb
             promote = promote.lower() if not self.whites_move else promote
             self.board[to_coord[1]][to_coord[0]] = Board.PIECE_TO_NUMBER[promote]
 
@@ -194,11 +260,48 @@ class Board():
                     self.castling_rights &= ~self.BLACK_QUEEN_CASTLE
                 if to_coord == (7,7):
                     self.castling_rights &= ~self.BLACK_KING_CASTLE
+                match Board.PIECE_TO_NUMBER[promote]:
+                    case 2:   
+                        self.bb_white_knights ^= to_bb
+                    case 3:
+                        self.bb_white_bishops ^= to_bb
+                    case 4:
+                        self.bb_white_rooks ^= to_bb
+                    case 5:
+                        self.bb_white_queens ^= to_bb
+
+                self.bb_white_pawns ^= from_bb
+                self.bb_white_occupy ^= (from_bb | to_bb)
+                
+                self.bb_black_knights &= to_bb_mask
+                self.bb_black_bishops &= to_bb_mask
+                self.bb_black_rooks &= to_bb_mask
+                self.bb_black_queens &= to_bb_mask
+                self.bb_black_occupy &= to_bb_mask
             else:
                 if to_coord == (0,0):
                     self.castling_rights &= ~self.WHITE_QUEEN_CASTLE
                 if to_coord == (7,0):
                     self.castling_rights &= ~self.WHITE_KING_CASTLE
+                match Board.PIECE_TO_NUMBER[promote]:
+                    case -2:
+                        self.bb_black_knights ^= to_bb
+                    case -3:
+                        self.bb_black_bishops ^= to_bb
+                    case -4:
+                        self.bb_black_rooks ^=  to_bb
+                    case -5:
+                        self.bb_black_queens ^= to_bb
+
+                self.bb_black_pawns ^= from_bb
+                self.bb_black_occupy ^= (from_bb | to_bb)
+                
+                self.bb_white_knights &= to_bb_mask
+                self.bb_white_bishops &= to_bb_mask
+                self.bb_white_rooks &= to_bb_mask
+                self.bb_white_queens &= to_bb_mask
+                self.bb_white_occupy &= to_bb_mask
+            self.bb_occupy = self.bb_white_occupy | self.bb_black_occupy
 
         self.board[from_coord[1]][from_coord[0]] = 0
         
@@ -211,7 +314,6 @@ class Board():
             self.move_number+=1
         self.halfmove_clock = 0
         self.whites_move = not self.whites_move 
-        self.update_bitboards()
 
     def separate_bitboards(self, bitboard):
         set_bits = []
@@ -233,13 +335,13 @@ class Board():
             from_coord = self.bitboard_to_coordinate(from_bb)
             self.board[to_coord[1]][to_coord[0]] = self.board[from_coord[1]][from_coord[0]]
             self.board[from_coord[1]][from_coord[0]] = 0
-            self.update_bitboards()
+            self.init_bitboards()
             if not self.is_king_in_check(self.whites_move):
                 correct_from_bb.append(from_bb)
         if len(correct_from_bb) != 1:
             print("AHHHHHHHHH")
         self.board = org_board
-        self.update_bitboards()
+        self.init_bitboards()
         return correct_from_bb[0]
     
 
@@ -262,13 +364,15 @@ class Board():
                     self.castling_rights &= ~self.WHITE_KING_CASTLE
             self.halfmove_clock = 0
         self.board[to_coord[1]][to_coord[0]] = self.board[from_coord[1]][from_coord[0]]
+        piece = self.board[from_coord[1]][from_coord[0]]
         self.board[from_coord[1]][from_coord[0]] = 0
         
         if not self.whites_move:
             self.move_number+=1
+        self.update_bitboards(from_bb, to_bb, piece)
         self.whites_move = not self.whites_move
         self.en_passant_square = None
-        self.update_bitboards()
+        
 
     def move_rook(self, from_bb, to_bb):
         if bin(from_bb).count("1")>1:
@@ -298,566 +402,425 @@ class Board():
             self.castling_rights &= ~self.WHITE_KING_CASTLE
             self.castling_rights &= ~self.WHITE_QUEEN_CASTLE
             if to_bb == 0x0000000000000040: # King-side castling
+                self.bb_white_rooks ^= 0x00000000000000a0
+                self.bb_white_occupy ^= 0x00000000000000a0
+                self.bb_occupy ^= 0x00000000000000a0
                 self.board[0][5],self.board[0][7] = self.board[0][7],0             
             else:
+                self.bb_white_rooks ^= 0x0000000000000009
+                self.bb_white_occupy ^= 0x0000000000000009
+                self.bb_occupy ^= 0x0000000000000009
                 self.board[0][3],self.board[0][0] = self.board[0][0],0
             self.move_piece(from_bb, to_bb)
         else:
             self.castling_rights &= ~self.BLACK_KING_CASTLE        
             self.castling_rights &= ~self.BLACK_QUEEN_CASTLE
             if to_bb == 0x4000000000000000: # King-side castling
+                self.bb_black_rooks ^= 0xa000000000000000
+                self.bb_black_occupy ^= 0xa000000000000000
+                self.bb_occupy ^= 0xa000000000000000
                 self.board[7][5],self.board[7][7] = self.board[7][7],0
             else:
+                self.bb_black_rooks ^= 0x0900000000000000
+                self.bb_black_occupy ^= 0x0900000000000000
+                self.bb_occupy ^= 0x0900000000000000
                 self.board[7][3],self.board[7][0] = self.board[7][0],0
             self.move_piece(from_bb, to_bb)
 
-    def make_algebraic_move(self, move):
-        temp_fen = self.export_fen()
-        if move[0] in ('a','b','c','d','e','f','g','h'):
-            file = ord(move[0]) - ord('a')
-            if '=' in move:
-                promote_peice = move.split('=')[1][0]
+    def make_pawn_move(self, move):
+        if '=' in move:
+            promote_peice = move.split('=')[1][0]
+        else:
+            promote_peice=None
+        
+        from_square_bitboard, to_square_bitboard = self.get_to_from_pawn_move(move)
+        if from_square_bitboard and to_square_bitboard:
+            self.move_pawn(from_square_bitboard, to_square_bitboard, promote_peice)
+            return 1
+        else:
+            print("not valid")
+            return -1
+    def make_knight_move(self, move):
+        from_square_bitboard, to_square_bitboard = self.get_to_from_knight_move(move)
+        if from_square_bitboard and to_square_bitboard:
+            self.move_piece(from_square_bitboard, to_square_bitboard)
+            return 1
+        else:
+            print("not valid")
+            return -1
+
+    def make_bishop_move(self, move):
+        from_square_bitboard, to_square_bitboard = self.get_to_from_bishop_move(move)
+        if from_square_bitboard and to_square_bitboard:
+            self.move_piece(from_square_bitboard, to_square_bitboard)
+            return 1
+        else:
+            print("not valid")
+            return -1
+
+    def make_rook_move(self, move):
+        from_square_bitboard, to_square_bitboard = self.get_to_from_rook_move(move)
+        if from_square_bitboard and to_square_bitboard:
+            self.move_rook(from_square_bitboard, to_square_bitboard)
+            return 1
+        else:
+            print("not valid")
+            return -1
+
+    def make_queen_move(self, move):
+        from_square_bitboard, to_square_bitboard = self.get_to_from_queen_move(move)
+        if from_square_bitboard and to_square_bitboard:
+            self.move_piece(from_square_bitboard, to_square_bitboard)
+            return 1
+        else:
+            print("not valid")
+            return -1
+
+    def make_king_move(self, move):
+        from_square_bitboard, to_square_bitboard = self.get_to_from_king_move(move)
+        if to_square_bitboard:
+            self.move_king(from_square_bitboard, to_square_bitboard)
+            return 1
+        else:
+            print("not valid")
+            return -1
+
+
+    def make_castle_move(self, move):
+        if move.upper().startswith("O-O-O") or move.startswith("0-0-0"):
+            if self.whites_move:
+                from_square_bitboard = self.bb_white_king
+                to_square_bitboard = 0x0000000000000004  # Queen-side castling
             else:
-               promote_peice=None
-            if move [1] == 'x':
-                to_square = self.alphanum_to_coordinate(move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_attacks(to_square_bitboard,self.whites_move) & self.bb_white_pawns
-                    to_square_bitboard &= self.bb_black_occupy | self.coordinate_to_bitboard(self.en_passant_square)
-                else:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_attacks(to_square_bitboard,self.whites_move) & self.bb_black_pawns
-                    to_square_bitboard &= self.bb_white_occupy | self.coordinate_to_bitboard(self.en_passant_square)
+                from_square_bitboard = self.bb_black_king
+                to_square_bitboard = 0x0400000000000000 # King-side castling
+        elif move.upper().startswith("O-O") or move.startswith("0-0"):
+            if self.whites_move:
+                from_square_bitboard = self.bb_white_king
+                to_square_bitboard = 0x0000000000000040  # King-side castling
             else:
-                to_square = self.alphanum_to_coordinate(move[0:2])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_move(to_square_bitboard,self.whites_move) & self.bb_white_pawns
-                    to_square_bitboard &= ~self.bb_black_occupy
-                else:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_move(to_square_bitboard,self.whites_move) & self.bb_black_pawns
-                    to_square_bitboard &= ~self.bb_white_occupy
-
-            if from_square_bitboard and to_square_bitboard:
-                self.move_pawn(from_square_bitboard, to_square_bitboard, promote_peice)
-            else:
-                print("not valid")
-                return -1
-
-        elif move[0] == 'N':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
-                    #to_square_bitboard &= self.bb_white_occupy
-                
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                self.move_piece(from_square_bitboard, to_square_bitboard)
-            else:
-                print("not valid")
-                return -1
-
-        elif move[0] == 'B':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
-                    #to_square_bitboard &= self.bb_white_occupy
-                
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                self.move_piece(from_square_bitboard, to_square_bitboard)
-            else:
-                print("not valid")
-                return -1
-
-        elif move[0] == 'R':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
-                    
-                else:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
-                    
-                
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
-                    
-                else:
-                    from_square_bitboard = self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
-                    
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                self.move_rook(from_square_bitboard, to_square_bitboard)
-            else:
-                print("not valid")
-                return -1
-
-        elif move[0] == 'Q':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
-                    #to_square_bitboard &= self.bb_white_occupy
-              
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                self.move_piece(from_square_bitboard, to_square_bitboard)
-            else:
-                print("not valid")
-                return -1
-
-        elif move[0] == 'K':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square) & self.king_moves(self.whites_move)
-                if self.whites_move:
-                    from_square_bitboard = self.bb_white_king
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.bb_black_king
-                    #to_square_bitboard &= self.bb_white_occupy
-                if to_square_bitboard:
-                    self.move_king(from_square_bitboard, to_square_bitboard)
-                else:
-                    print("not valid")
-                    return -1
-            else:
-                print("AHHHHHHHH")
-                return -1
-        elif move[0].upper() == 'O' or move[0] == '0':
-
-            if move.upper().startswith("O-O-O") or move.startswith("0-0-0"):
-                if self.whites_move:
-                    from_square_bitboard = self.bb_white_king
-                    to_square_bitboard = 0x0000000000000004  # Queen-side castling
-                else:
-                    from_square_bitboard = self.bb_black_king
-                    to_square_bitboard = 0x0400000000000000 
-            elif move.upper().startswith("O-O") or move.startswith("0-0"):
-                if self.whites_move:
-                    from_square_bitboard = self.bb_white_king
-                    to_square_bitboard = 0x0000000000000040  # King-side castling
-                else:
-                    from_square_bitboard = self.bb_black_king
-                    to_square_bitboard = 0x4000000000000000
-            if to_square_bitboard & self.king_moves(self.whites_move):
-                self.move_castle(from_square_bitboard, to_square_bitboard)
-            else:
-                print("Not Valid")
-                return -1
+                from_square_bitboard = self.bb_black_king
+                to_square_bitboard = 0x4000000000000000  # King-side castling
+        if to_square_bitboard & self.king_moves(self.whites_move):
+            self.move_castle(from_square_bitboard, to_square_bitboard)
+            return 1
         else:
             print("Not Valid")
             return -1
-        self.last_fen = temp_fen
-        return self.export_fen()
+
+    def make_algebraic_move(self, move):
+        if move[0] in ('a','b','c','d','e','f','g','h'):
+            return_flag= self.make_pawn_move(move)
+
+        elif move[0] == 'N':
+            return_flag= self.make_knight_move(move)
+
+        elif move[0] == 'B':
+            return_flag= self.make_bishop_move(move)
+
+        elif move[0] == 'R':
+            return_flag= self.make_rook_move(move)
+
+        elif move[0] == 'Q':
+            return_flag= self.make_queen_move(move)
+            
+        elif move[0] == 'K':
+            return_flag= self.make_king_move(move)
+            
+        elif move[0].upper() == 'O' or move[0] == '0':
+            return_flag= self.make_castle_move(move)
+
+        else:
+            return_flag=-1
+        if return_flag ==-1:
+            print("Not Valid")
+            return -1
+        self.last_fen = self.current_fen
+        self.current_fen = self.export_fen()
+        return self.current_fen
+
+    def get_to_from_pawn_move(self, move, return_bitboard=True):
+        file = ord(move[0]) - ord('a')
+        if '=' in move:
+            promote_peice = move.split('=')[1][0]
+        else:
+            promote_peice=None
+        if move [1] == 'x':
+            to_square = self.alphanum_to_coordinate(move[2:4])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_attacks(to_square_bitboard,self.whites_move) & self.bb_white_pawns
+                to_square_bitboard &= self.bb_black_occupy | self.coordinate_to_bitboard(self.en_passant_square)
+            else:
+                from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_attacks(to_square_bitboard,self.whites_move) & self.bb_black_pawns
+                to_square_bitboard &= self.bb_white_occupy | self.coordinate_to_bitboard(self.en_passant_square)
+        else:
+            to_square = self.alphanum_to_coordinate(move[0:2])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_move(to_square_bitboard,self.whites_move) & self.bb_white_pawns
+                to_square_bitboard &= ~self.bb_black_occupy
+            else:
+                from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_move(to_square_bitboard,self.whites_move) & self.bb_black_pawns
+                to_square_bitboard &= ~self.bb_white_occupy
+
+        if from_square_bitboard and to_square_bitboard:
+            if return_bitboard:
+                return (from_square_bitboard, to_square_bitboard)
+            return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+                    
+        else:
+            print("not valid")
+            return -1
+
+    def get_to_from_knight_move(self, move, return_bitboard=True):
+        naked_move, _ = re.subn("[x+#]",'',move)
+        if len(naked_move) == 3:
+            to_square = self.alphanum_to_coordinate(naked_move[1:3])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
+            else:
+                from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
+                
+        elif len(naked_move) == 4:
+            to_square = self.alphanum_to_coordinate(naked_move[2:4])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
+            else:
+                from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
+                
+
+        elif len(naked_move) == 5:
+            to_square = self.alphanum_to_coordinate(naked_move[3:5])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
+            else:
+                from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
+        if from_square_bitboard and to_square_bitboard:
+            from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
+            if return_bitboard:
+                return (from_square_bitboard, to_square_bitboard)
+            return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+        else:
+            print("not valid")
+            return -1
+
+    def get_to_from_bishop_move(self, move, return_bitboard=True):
+        naked_move, _ = re.subn("[x+#]",'',move)
+        if len(naked_move) == 3:
+            to_square = self.alphanum_to_coordinate(naked_move[1:3])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
+            else:
+                from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
+                
+        elif len(naked_move) == 4:
+            to_square = self.alphanum_to_coordinate(naked_move[2:4])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
+            else:
+                from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
+                
+
+        elif len(naked_move) == 5:
+            to_square = self.alphanum_to_coordinate(naked_move[3:5])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
+            else:
+                from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
+        if from_square_bitboard and to_square_bitboard:
+            from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
+            if return_bitboard:
+                return (from_square_bitboard, to_square_bitboard)
+            return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+            
+        else:
+            print("not valid")
+            return -1
+
+    def get_to_from_rook_move(self, move, return_bitboard=True):
+        naked_move, _ = re.subn("[x+#]",'',move)
+        if len(naked_move) == 3:
+            to_square = self.alphanum_to_coordinate(naked_move[1:3])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
+                    
+            else:
+                from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
+                    
+                
+        elif len(naked_move) == 4:
+            to_square = self.alphanum_to_coordinate(naked_move[2:4])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
+                    
+            else:
+                from_square_bitboard = self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
+                    
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
+                
+
+        elif len(naked_move) == 5:
+            to_square = self.alphanum_to_coordinate(naked_move[3:5])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
+            else:
+                from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
+        if from_square_bitboard and to_square_bitboard:
+            from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
+            if return_bitboard:
+                return (from_square_bitboard, to_square_bitboard)
+            return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+            
+        else:
+            print("not valid")
+            return -1
+
+    def get_to_from_queen_move(self, move, return_bitboard=True):
+        naked_move, _ = re.subn("[x+#]",'',move)
+        if len(naked_move) == 3:
+            to_square = self.alphanum_to_coordinate(naked_move[1:3])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard =  self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
+            else:
+                from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
+              
+        elif len(naked_move) == 4:
+            to_square = self.alphanum_to_coordinate(naked_move[2:4])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
+            else:
+                from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
+                
+
+        elif len(naked_move) == 5:
+            to_square = self.alphanum_to_coordinate(naked_move[3:5])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square)
+            if self.whites_move:
+                from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
+            else:
+                from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
+            if naked_move[1].isdigit():
+                from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
+            else:
+                from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
+        if from_square_bitboard and to_square_bitboard:
+            from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
+            if return_bitboard:
+                return (from_square_bitboard, to_square_bitboard)
+            return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+            
+        else:
+            print("not valid")
+            return -1
+    def get_to_from_king_move(self, move, return_bitboard=True):
+        naked_move, _ = re.subn("[x+#]",'',move)
+        if len(naked_move) == 3:
+            to_square = self.alphanum_to_coordinate(naked_move[1:3])
+            to_square_bitboard = self.coordinate_to_bitboard(to_square) & self.king_moves(self.whites_move)
+            if self.whites_move:
+                from_square_bitboard = self.bb_white_king
+            else:
+                from_square_bitboard = self.bb_black_king
+            if to_square_bitboard:
+                if return_bitboard:
+                    return (from_square_bitboard, to_square_bitboard)
+                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+            else:
+                print("not valid")
+                return -1
+        else:
+            print("AHHHHHHHH")
+            return -1
+    def get_to_from_castle_move(self, move, return_bitboard=True):
+        if move.upper().startswith("O-O-O") or move.startswith("0-0-0"):
+            if self.whites_move:
+                from_square_bitboard = self.bb_white_king
+                to_square_bitboard = 0x0000000000000004  # Queen-side castling
+            else:
+                from_square_bitboard = self.bb_black_king
+                to_square_bitboard = 0x0400000000000000 
+        elif move.upper().startswith("O-O") or move.startswith("0-0"):
+            if self.whites_move:
+                from_square_bitboard = self.bb_white_king
+                to_square_bitboard = 0x0000000000000040  # King-side castling
+            else:
+                from_square_bitboard = self.bb_black_king
+                to_square_bitboard = 0x4000000000000000
+        if to_square_bitboard & self.king_moves(self.whites_move):
+            from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
+            if return_bitboard:
+                return (from_square_bitboard, to_square_bitboard)
+            return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+            
+        else:
+            print("Not Valid")
+            return -1
 
     def get_to_from_square_algebraic_move(self, move, return_bitboard=True):
         
         if move[0] in ('a','b','c','d','e','f','g','h'):
-            file = ord(move[0]) - ord('a')
-            if '=' in move:
-                promote_peice = move.split('=')[1][0]
-            else:
-               promote_peice=None
-            if move [1] == 'x':
-                to_square = self.alphanum_to_coordinate(move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_attacks(to_square_bitboard,self.whites_move) & self.bb_white_pawns
-                    to_square_bitboard &= self.bb_black_occupy | self.coordinate_to_bitboard(self.en_passant_square)
-                else:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_attacks(to_square_bitboard,self.whites_move) & self.bb_black_pawns
-                    to_square_bitboard &= self.bb_white_occupy | self.coordinate_to_bitboard(self.en_passant_square)
-            else:
-                to_square = self.alphanum_to_coordinate(move[0:2])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_move(to_square_bitboard,self.whites_move) & self.bb_white_pawns
-                    to_square_bitboard &= ~self.bb_black_occupy
-                else:
-                    from_square_bitboard = Board.FILE_BITBOARDS[file] & self.from_pawn_move(to_square_bitboard,self.whites_move) & self.bb_black_pawns
-                    to_square_bitboard &= ~self.bb_white_occupy
-
-            if from_square_bitboard and to_square_bitboard:
-                if return_bitboard:
-                    return (from_square_bitboard, to_square_bitboard)
-                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
-                    
-            else:
-                print("not valid")
-                return -1
+            return self.get_to_from_pawn_move(move, return_bitboard)
 
         elif move[0] == 'N':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
-                    #to_square_bitboard &= self.bb_white_occupy
-                
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_white_knights
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_knight_move(to_square_bitboard,self.whites_move) & self.bb_black_knights
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
-                if return_bitboard:
-                    return (from_square_bitboard, to_square_bitboard)
-                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
-            else:
-                print("not valid")
-                return -1
+            return self.get_to_from_knight_move(move, return_bitboard)
 
         elif move[0] == 'B':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
-                    #to_square_bitboard &= self.bb_white_occupy
-                
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_white_bishops
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_bishop_move(to_square_bitboard,self.whites_move) & self.bb_black_bishops
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
-                if return_bitboard:
-                    return (from_square_bitboard, to_square_bitboard)
-                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
-            
-            else:
-                print("not valid")
-                return -1
+            return self.get_to_from_bishop_move(move, return_bitboard)
 
         elif move[0] == 'R':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
-                    
-                else:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
-                    
-                
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
-                    
-                else:
-                    from_square_bitboard = self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
-                    
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_white_rooks
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard =  self.from_rook_move(to_square_bitboard,self.whites_move) & self.bb_black_rooks
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
-                if return_bitboard:
-                    return (from_square_bitboard, to_square_bitboard)
-                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
-            
-            else:
-                print("not valid")
-                return -1
+            return self.get_to_from_rook_move(move, return_bitboard)
 
         elif move[0] == 'Q':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard =  self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
-                    #to_square_bitboard &= self.bb_white_occupy
-              
-            elif len(naked_move) == 4:
-                to_square = self.alphanum_to_coordinate(naked_move[2:4])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')]
-                
-
-            elif len(naked_move) == 5:
-                to_square = self.alphanum_to_coordinate(naked_move[3:5])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square)
-                if self.whites_move:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_white_queens
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.from_queen_move(to_square_bitboard,self.whites_move) & self.bb_black_queens
-                    #to_square_bitboard &= self.bb_white_occupy
-                if naked_move[1].isdigit():
-                    from_square_bitboard&= Board.RANK_BITBOARDS[int(naked_move[1])-1] & Board.FILE_BITBOARDS[ord(naked_move[2])-ord('a')]
-                else:
-                    from_square_bitboard&= Board.FILE_BITBOARDS[ord(naked_move[1])-ord('a')] & Board.RANK_BITBOARDS[int(naked_move[2])-1]
-            if from_square_bitboard and to_square_bitboard:
-                from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
-                if return_bitboard:
-                    return (from_square_bitboard, to_square_bitboard)
-                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
-            
-            else:
-                print("not valid")
-                return -1
+            return self.get_to_from_queen_move(move, return_bitboard)
 
         elif move[0] == 'K':
-            naked_move, _ = re.subn("[x+#]",'',move)
-            if len(naked_move) == 3:
-                to_square = self.alphanum_to_coordinate(naked_move[1:3])
-                to_square_bitboard = self.coordinate_to_bitboard(to_square) & self.king_moves(self.whites_move)
-                if self.whites_move:
-                    from_square_bitboard = self.bb_white_king
-                    #to_square_bitboard &= self.bb_black_occupy
-                else:
-                    from_square_bitboard = self.bb_black_king
-                    #to_square_bitboard &= self.bb_white_occupy
-                if to_square_bitboard:
-                    return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
-                else:
-                    print("not valid")
-                    return -1
-            else:
-                print("AHHHHHHHH")
-                return -1
-        elif move[0].upper() == 'O' or move[0] == '0':
+            return self.get_to_from_king_move(move, return_bitboard)
 
-            if move.upper().startswith("O-O-O") or move.startswith("0-0-0"):
-                if self.whites_move:
-                    from_square_bitboard = self.bb_white_king
-                    to_square_bitboard = 0x0000000000000004  # Queen-side castling
-                else:
-                    from_square_bitboard = self.bb_black_king
-                    to_square_bitboard = 0x0400000000000000 
-            elif move.upper().startswith("O-O") or move.startswith("0-0"):
-                if self.whites_move:
-                    from_square_bitboard = self.bb_white_king
-                    to_square_bitboard = 0x0000000000000040  # King-side castling
-                else:
-                    from_square_bitboard = self.bb_black_king
-                    to_square_bitboard = 0x4000000000000000
-            if to_square_bitboard & self.king_moves(self.whites_move):
-                from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
-                if return_bitboard:
-                    return (from_square_bitboard, to_square_bitboard)
-                return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
+        elif move[0].upper() == 'O' or move[0] == '0':
+            return self.get_to_from_castle_move(move, return_bitboard)
             
-            else:
-                print("Not Valid")
-                return -1
         else:
             print("Not Valid")
             return -1
-        
-
 
     def display_bitboards(self):
         print("White Pawn BitBoard:")
@@ -1031,7 +994,6 @@ class Board():
             return from_bitboard
 
     def rook_moves(self, white, queen = False):
-        # Initialize an empty bitboard for rook attacks
         attack_bitboard = 0
         if queen:
             rook_bitboard = self.bb_white_queens if white else self.bb_black_queens
@@ -1073,7 +1035,6 @@ class Board():
         return attack_bitboard & ~self_occupy
 
     def from_rook_move(self, position, white, queen = False):
-        # Initialize an empty bitboard for rook attacks
         attack_bitboard = 0
         if queen:
             rook_bitboard = self.bb_white_queens if white else self.bb_black_queens
@@ -1115,7 +1076,6 @@ class Board():
         return attack_bitboard
 
     def bishop_moves(self, white, queen = False):
-        # Initialize an empty bitboard for bishop attacks
         attack_bitboard = 0
         if queen:
             bishop_bitboard = self.bb_white_queens if white else self.bb_black_queens
@@ -1128,7 +1088,6 @@ class Board():
             up_left_attacks = (up_left_attacks << 7) 
             attack_bitboard |= up_left_attacks
             up_left_attacks &= ~self.bb_occupy & 0x00FEFEFEFEFEFEFE
-            
 
         # Generate attacks along the diagonals (up-left)
         up_right_attacks = bishop_bitboard & 0x007F7F7F7F7F7F7F
@@ -1154,7 +1113,7 @@ class Board():
         return attack_bitboard & ~self_occupy
 
     def from_bishop_move(self, position, white, queen=False):
-        # Initialize an empty bitboard for bishop attacks
+
         attack_bitboard = 0
         if queen:
             bishop_bitboard = self.bb_white_queens if white else self.bb_black_queens
@@ -1167,7 +1126,6 @@ class Board():
             attack_bitboard |= up_left_attacks
             up_left_attacks &= ~self.bb_occupy & 0x00FEFEFEFEFEFEFE
             
-
         # Generate attacks along the diagonals (up-left)
         up_right_attacks = position & 0x007F7F7F7F7F7F7F
         while up_right_attacks & 0x007F7F7F7F7F7F7F != 0:
@@ -1267,6 +1225,7 @@ class Board():
         if white:
             return (self.bb_white_king & (self.pawn_attacks(white = False) | self.knight_moves(white = False) | self.bishop_moves(white = False) | self.rook_moves(white = False) | self.queen_moves(white = False))) != 0 
         return (self.bb_black_king & (self.pawn_attacks(white = True) | self.knight_moves(white = True) | self.bishop_moves(white = True) | self.rook_moves(white = True) | self.queen_moves(white = True))) != 0
+
     def play_input(self):
         while self.result == -1:
             self.display(self.whites_move)
@@ -1276,6 +1235,7 @@ class Board():
                 self.display_bitboards()
             else:
                 self.make_algebraic_move(move)
+
     def display(self, whites_perspective=True, players_perspective= False):
         print ("")
         if players_perspective:
@@ -1296,7 +1256,7 @@ class Board():
         else:
             b = self.board
         if letter_rep:
-            return Board.NUMBER_TO_PIECE.get(b[coord[1]][coord[0]])
+            return Board.NUMBER_TO_PIECE[b[coord[1]][coord[0]]]
         return b[coord[1]][coord[0]]
     
 
@@ -1305,7 +1265,7 @@ def test():
     for i in range(8):
         for j in range (8):
             b.board[i][j] = 5
-            b.update_bitboards()
+            b.init_bitboards()
             b.display_bitboard(b.bb_white_queens)
             print()
             b.display_bitboard(b.queen_moves(True))

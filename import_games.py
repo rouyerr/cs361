@@ -1,6 +1,6 @@
-
-from datetime import time
 import os
+from datetime import datetime
+import time
 import glob
 import json
 import ndjson
@@ -167,8 +167,14 @@ def load_json_from_api(url, header=None, params = None, fmt = None):
         print(f"Error: Failed to retrieve data from the API. Status Code {response.status_code}")
         return None
 
+def date_to_epoch(date_string):
+    if date_string:
+        date_object = datetime.strptime(date_string, "%Y-%m-%d")
+        epoch_time = int(time.mktime(date_object.timetuple()))
+        return epoch_time
+    return None
 
-def get_chess_com_games(username=None, time_formats=None, save = False, mesg_label= None):
+def get_chess_com_games(username=None, time_formats=None, rated=True, from_date=None, to_date=None, save = False, mesg_label= None):
     
     with open(f".\\config.json", "r") as f:
         config = json.load(f)
@@ -177,6 +183,13 @@ def get_chess_com_games(username=None, time_formats=None, save = False, mesg_lab
         username = config.get("chess_com_user")
     if time_formats == None:
         time_formats = config.get("time_formats")
+    if from_date:
+        from_year, from_month, _ = [int(d) for d in from_date.split('-')]
+        from_epoch = date_to_epoch(from_date)
+    if to_date:
+        to_year, to_month, _ = [int(d) for d in to_date.split('-')]
+        to_epoch = date_to_epoch(to_date)
+
     imported_dir = config.get("imported_dir")
     header = {'User-Agent': config.get("email")}
     api_url = f"https://api.chess.com/pub/player/{username}/games/archives"
@@ -189,11 +202,18 @@ def get_chess_com_games(username=None, time_formats=None, save = False, mesg_lab
     games = []
 
     for url in monthlyURLS:
-        month = load_json_from_api(url, header)
-        games.extend(month.get("games"))
-        prints(f"{len(games)} ingested so far, Up to date {'/'.join(url.split('/')[-2:])}", mesg_label)
+        year, month = url.split('/')[-2:]
 
-    games = list(filter(lambda g: g.get("rated") == True and g.get("time_class") in time_formats and g.get("rules") == "chess" and g.get("initial_setup") == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", games))
+        if (not from_date or (int(year) > from_year or (int(year) == from_year and int(month) >= from_month))) and \
+           (not to_date or (int(year) < to_year or (int(year) == to_year and int(month) <= to_month))):
+            monthGames = load_json_from_api(url, header)
+            games.extend(monthGames.get("games"))
+            prints(f"{len(games)} ingested so far, Up to date {'/'.join(url.split('/')[-2:])}", mesg_label)
+    if rated:
+        games = list(filter(lambda g: g.get("rated") == True and g.get("time_class") in time_formats and g.get("rules") == "chess" and g.get("initial_setup") == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", games))
+    else:
+        games = list(filter(lambda g: g.get("time_class") in time_formats and g.get("rules") == "chess" and g.get("initial_setup") == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", games))
+
     lower_username=username.lower()
     for g in games:
         g["variant"] = "standard" if g.get("rules") == "chess" else g.get("rules")
@@ -203,12 +223,10 @@ def get_chess_com_games(username=None, time_formats=None, save = False, mesg_lab
         g["platform"] = "chess.com"
         g["player_color"] = "white" if g.get("white").get("username").lower() == lower_username else "black"
     
-
     if save:
         with open(f".\\{imported_dir}\\chess_com_{username}.json", "w") as f:
             json.dump(games,f)
     
-
     return games
 
 def load_games (file_name, filtered_games = None):
@@ -241,7 +259,10 @@ def load_study (file_name):
         
 
 def sanitize_png_moves(games, mesg_label=None, sub_mesg_label=None):
+
     prints(f"Santizing the moves of {len(games)} games", mesg_label)
+    if not isinstance(games,list):
+        games = [games]
     for i,g in enumerate(games):
         if i %500 == 0:
             prints(f"Santized {i}/{len(games)} games", sub_mesg_label)
@@ -249,19 +270,10 @@ def sanitize_png_moves(games, mesg_label=None, sub_mesg_label=None):
         tags_and_move_numbers = re.compile(r"\[[^\]]+\]|\{[^\}]*\}|\d+\.+")
         clean_png = re.sub(tags_and_move_numbers, '', pgn).strip()
         moves = [i for i in clean_png.split(" ") if i]
-        if moves and moves[-1] == "1/2-1/2" or moves[-1] == "1-0" or moves[-1] == "0-1":
+        if moves and moves[-1] == "1/2-1/2" or moves[-1] == "1-0" or moves[-1] == "0-1" or moves[-1] == '*':
             g["result"] = moves.pop(-1)
         g["clean_moves"] = moves
-
-def sanitize_pgn_study(games):
-    for g in games:
-        pgn = g["pgn"]
-        tags_and_move_numbers = re.compile(r"\[[^\]]+\]|\{[^\}]*\}|\d+\.+")
-        clean_png = re.sub(tags_and_move_numbers, '', pgn).strip()
-        moves = [i for i in clean_png.split(" ") if i]
-        if moves and moves[-1] == "1/2-1/2" or moves[-1] == "1-0" or moves[-1] == "0-1":
-            g["result"] = moves.pop(-1)
-        g["clean_moves"] = moves
+    
 
 def add_fen_list(games, mesg_label=None, sub_mesg_label=None):
     prints("Adding FENs to each position in every game (Used for building trees and analysis later)",mesg_label)
@@ -307,29 +319,7 @@ def get_lichess_games(username=None, time_formats=None, rated = True, from_epoch
         params["until"] = to_epoch
     if rated:
         params["rated"] = rated
-    
-    
-    # params = {
-    #     "since": since,
-    #     "until": until,
-    #     "max": max,
-    #     "vs": vs,
-    #     "rated": rated,
-    #     "perfType": perf_type,
-    #     "color": color,
-    #     "analysed": analysed,
-    #     "moves": moves,
-    #     "pgnInJson": "true",
-    #     "tags": tags,
-    #     "clocks": clocks,
-    #     "evals": evals,
-    #     "opening": opening,
-    #     "ongoing": ongoing,
-    #     "finished": finished,
-    #     "players": players,
-    #     "sort": sort,
-    #     "literate": literate,
-    # }
+     
     prints("This may take a few minutes...\nApproximately 60 games/sec if you inputted a token or 20 games/ sec otherwise", mesg_label)
     games = load_json_from_api(api_url,header=header, params = params, fmt = ndjson.Decoder)
     
@@ -347,9 +337,6 @@ def get_lichess_games(username=None, time_formats=None, rated = True, from_epoch
         g["platform"] = "lichess"
         g["player_color"] = "white" if g.get("white").get("username").lower() == lower_username else "black"
         
-
-    #white_games = list(filter(lambda g: g.get("player_color") == "white", games))
-    #black_games = list(filter(lambda g: g.get("player_color") == "black", games))
     
     if save: 
         with open(f".\\{imported_dir}\\lc_{username}_all_games.json", "w") as f:
@@ -365,7 +352,8 @@ def import_pgn_file(file_path, username=None, save = False):
     if username==None:
         username = config.get('name')
     imported_dir = config.get("imported_dir")
-    with open(f".\\{file_path}{'.pgn' if not file_path.endswith('.pgn') else''}", "r") as f:
+    file_path = os.path.normpath(file_path)
+    with open(f"{file_path}{'.pgn' if not file_path.endswith('.pgn') else''}", "r") as f:
         lines = f.readlines()
     games = []
     g = None
@@ -399,52 +387,15 @@ def import_pgn_file(file_path, username=None, save = False):
         
     return games
 
-def import_pgn_file_re(file_path, username=None, save = False):
-    
-    with open(f".\\config.json", "r") as f:
-        config = json.load(f)
-    if username==None:
-        username = config.get('name')
-    with open(f".\\{file_path}{'.pgn' if not file_path.endswith('.pgn') else''}", "r") as f:
-        lines = f.readlines()
-    games = []
-    g = None
-    pgn=""
-    tag_start_flag = True
-    for line in lines:
-        pgn+=f"{line}\n"
-        if line.startswith("[Event"):
-            if g!= None:
-                g["pgn"]=pgn
-                games.append(g)
-                pgn=""
-            g=dict()
-            tag_start_flag = True
-        if line[0] == "[":
-            tag = line[1:].split('"')
-            tag[0]=tag[0].lower()
-            g[tag[0]] = tag[1]
-            if (tag[0] == "white" or tag[0] == "black") and tag[1] == username:
-                g["player_color"] = tag[0]
-            
-        elif line.startswith("1."):
-            g["moves"]=f"{g.get('moves','')}{line}\n"
-    if g!= None:
-        g["pgn"]=pgn
-        games.append(g)
-        pgn=""
-    file_name = file_path.split("\\")[-1]
-    
-        
-    return games
 
-def ingest_pgns(pgn_files=None, username=None, mesg_label=None, move_file = False, seperate = False):
+def ingest_pgns(pgn_files=None, username=None, mesg_label=None, move_file = True, seperate = False, study=False):
     with open(f".\\config.json", "r") as f:
         config = json.load(f)
     if pgn_files == None:
         pgn_files = config.get("ingest_dir")
     ingested_dir = config.get("ingested_dir", None)
     games = []
+
     if os.path.isdir(pgn_files):
         pgn_files = glob.glob(os.path.join(pgn_files, "*.pgn"))
         if not pgn_files:
@@ -456,21 +407,32 @@ def ingest_pgns(pgn_files=None, username=None, mesg_label=None, move_file = Fals
             else:
                 games.extend(import_pgn_file(pgn_file, username))
             prints(f"Done ingesting {pgn_file}", mesg_label)
-            
+            if move_file and ingested_dir:
+                if not os.path.exists(ingested_dir):
+                    os.makedirs(ingested_dir)
+                file_name = pgn_file.split('\\')[-1]
+                move_file = f"{ingested_dir}\\{file_name}"
+                prints(f"Moving to {move_file}", mesg_label)
+                shutil.move(pgn_file, ingested_dir)
         
         
     elif os.path.isfile(pgn_files) and pgn_files.lower().endswith(".pgn"):
-        prints(f"Ingesting {pgn_file}", mesg_label)
-        games = import_pgn_file(pgn_files)
-        prints(f"Done ingesting {pgn_file}", mesg_label)
+        prints(f"Ingesting {pgn_files}", mesg_label)
+        
+        if study: 
+            games = [(pgn_files.split("\\")[-1][:-4],import_pgn_file(pgn_files))]
+        else:
+            games = [import_pgn_file(pgn_files)]
+        prints(f"Done ingesting {pgn_files}", mesg_label)
 
-    if move_file and ingested_dir:
-        if not os.path.exists(ingested_dir):
-            os.makedirs(ingested_dir)
-        file_name = pgn_file.split('\\')[-1]
-        move_file = f"{ingested_dir}\\{file_name}"
-        prints(f"Moving to {move_file}", mesg_label)
-        shutil.move(pgn_file, ingested_dir)
+        if move_file and ingested_dir:
+            if not os.path.exists(ingested_dir):
+                os.makedirs(ingested_dir)
+            file_name = pgn_files.split('\\')[-1]
+            move_file = f"{ingested_dir}\\{file_name}"
+            prints(f"Moving to {move_file}", mesg_label)
+            shutil.move(pgn_files, ingested_dir)
+    
 
     return games
     
@@ -478,7 +440,6 @@ def prints(mesg, mesg_label=None):
     print(mesg)
     if mesg_label:
         mesg_label.config(text=mesg)
-
 
 def update_imported(file_name, add_fens=True):
     with open(f".\\config.json", "r") as f:
@@ -518,7 +479,6 @@ def dump_games(games, file_name=None,  mesg_label=None, sub_mesg_label=None, fil
     prints(f"Saved to {fp}",sub_mesg_label)
 
 def dump_study(study, file_name=None,  mesg_label=None, sub_mesg_label=None):
-
     with open(f".\\config.json", "r") as f:
         config = json.load(f)
 
@@ -534,7 +494,7 @@ def dump_study(study, file_name=None,  mesg_label=None, sub_mesg_label=None):
         json.dump(study,f)
     prints(f"Saved to {fp}",sub_mesg_label)
 
-def import_all_games(file_name=None, chess_com_user=None, lichess_user=None, pgns_files=None, time_formats = None, append=True, to_date=None, from_date=None, mesg_label=None, sub_mesg_label=None):
+def import_all_games(file_name=None, chess_com_user=None, lichess_user=None, pgns_files=None, time_formats = None, append=True, rated=True, from_date=None, to_date=None, mesg_label=None, sub_mesg_label=None):
     with open(f".\\config.json", "r") as f:
         config = json.load(f)
     
@@ -554,50 +514,47 @@ def import_all_games(file_name=None, chess_com_user=None, lichess_user=None, pgn
         with open(full_file_path, "r") as f:
             games_dict = json.load(f)
             games = games_dict.get("white_games")
-            games.extend(games_dict.get("black_games"))
-            games.extend(games_dict.get("other_games"))
+            games.extend(games_dict.get("black_games",[]))
+            games.extend(games_dict.get("other_games",[]))
     else:
         games = []
 
     if chess_com_user:
         prints(f"Ingesting Chess.com Games from user {chess_com_user}", mesg_label)
-        games.extend(get_chess_com_games(chess_com_user,time_formats = time_formats,mesg_label=sub_mesg_label))
+        games.extend(get_chess_com_games(chess_com_user,time_formats = time_formats, rated=rated, from_date=from_date, to_date=to_date, mesg_label=sub_mesg_label))
     if lichess_user:
         prints(f"Ingesting Lichess Games from user {lichess_user}", mesg_label)
-        games.extend(get_lichess_games(lichess_user,time_formats = time_formats,mesg_label=sub_mesg_label))
+        from_epoch = date_to_epoch(from_date)
+        to_epoch = date_to_epoch(to_date)
+
+        games.extend(get_lichess_games(lichess_user,time_formats = time_formats, rated=rated, from_epoch=from_epoch, to_epoch=to_epoch, mesg_label=sub_mesg_label))
     if pgns_files:
         prints(f"Ingesting Pgns files {pgns_files}",mesg_label)
         games.extend(ingest_pgns(pgns_files,mesg_label=sub_mesg_label))  
     
-
     sanitize_png_moves(games,mesg_label=mesg_label, sub_mesg_label=sub_mesg_label)
     add_fen_list(games,mesg_label=mesg_label, sub_mesg_label=sub_mesg_label)
 
     dump_games(games, file_name=file_name,  mesg_label=mesg_label, sub_mesg_label=sub_mesg_label)
     
-    
     return games
 
-def import_studies(file_name=None, study_as='w', pgns_files=None, append=True, mesg_label=None, sub_mesg_label=None):
+def import_studies(file_name=None, study_as='w', seperate=True, pgns_files=None, mesg_label=None, sub_mesg_label=None):
     with open(f".\\config.json", "r") as f:
         config = json.load(f)
-    
-    if file_name == None:
-        file_name = f"{config.get('name')}'s Study"
     
     if pgns_files == None or pgns_files == "":
         pgns_files = config.get("ingest_study_dir", False)
 
-
     if pgns_files:
         prints(f"Ingesting Pgns files {pgns_files}",mesg_label)
-        for name, study in ingest_pgns(pgns_files,mesg_label=sub_mesg_label, seperate=True):
+        for name, study in ingest_pgns(pgns_files, mesg_label=sub_mesg_label, seperate=seperate, study=True):
             study = {"name":name, "study_as":study_as, "studies":study}
-    
             sanitize_png_moves(study.get("studies"))
-           
+            if file_name:
+                name = file_name
             dump_study(study, file_name=name,  mesg_label=mesg_label, sub_mesg_label=sub_mesg_label)
-    
+
     return study
     
 

@@ -57,27 +57,31 @@ class MemorizationGame:
             
     def get_answer(self):
         return f"The correct move(s): {', '.join(self.valid_moves)}"
+
     def get_notes(self):
         return "\n".join(self.current_test_node.notes)
+
     def check_answer(self, move):
         if move in self.valid_moves:
             if len(self.valid_moves)>1:
                 return f"Correct! Also valid moves in study:{', '.join([move for move in self.valid_moves if move != move])}"
             return "Correct!"          
         return "Incorrect. Try again, or ask for a 'hint' or the 'answer'"
+
     def get_hint(self):
         return f"Hint: The move(s) starts with {', '.join([move[0] for move in self.valid_moves])}..."
 
     def return_to_last_node(self):
-        self.current_test_node = self.visited_nodes[-2]
-        self.current_subtitle = f"From {self.current_study_tree_name}: ({', '.join([s.get('event','') for s in self.current_test_node.studies])})"
-        self.current_board =  Board(self.current_test_node.fen)
-        self.valid_moves = [move for _, move in self.current_test_node.children]
-        self.from_coords = [self.current_board.get_to_from_square_algebraic_move(move,return_bitboard=False)[0] for move in self.valid_moves]
-        self.to_coords = [self.current_board.get_to_from_square_algebraic_move(move,return_bitboard=False)[1] for move in self.valid_moves]
+        if len(self.visited_nodes) >=2:
+            self.current_test_node = self.visited_nodes[-2]
+            self.visited_nodes = self.visited_nodes[:-1]
+            self.current_subtitle = f"From {self.current_study_tree_name}: ({', '.join([s.get('event','') for s in self.current_test_node.studies])})"
+            self.current_board =  Board(self.current_test_node.fen)
+            self.valid_moves = [move for _, move in self.current_test_node.children]
+            self.from_coords = [self.current_board.get_to_from_square_algebraic_move(move,return_bitboard=False)[0] for move in self.valid_moves]
+            self.to_coords = [self.current_board.get_to_from_square_algebraic_move(move,return_bitboard=False)[1] for move in self.valid_moves]
 
     def next_random_node(self):
-        
         self.current_test_node, self.current_study_tree_name = rand.choice(self.testing_nodes)
         self.visited_nodes.append(self.current_test_node)
         self.current_subtitle = f"From {self.current_study_tree_name}: ({', '.join([s.get('event','') for s in self.current_test_node.studies])})"
@@ -89,7 +93,6 @@ class MemorizationGame:
 
         
 if __name__ == "__main__":
-    
     studies = import_games.load_games("Remy Rouyer's Study.json")
     st = tree.StudyTree("Remy Rouyer's Study", studies=studies)
     print("starting game")

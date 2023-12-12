@@ -1,10 +1,5 @@
-
-
-import os
-import json
-import dill
 import import_games
-from board import Board
+from study_board import Board
 
 class Node:
     def __init__(self, fen, from_move = None, parent = None):
@@ -229,7 +224,6 @@ def run_through_game(game):
     moves = game.get("clean_moves",None)
     if moves:
         for i,m in enumerate(moves):
-            #print(f"{(i//2)+1}. {m}")
             
             made = b.make_algebraic_move(m)
             if made == -1:
@@ -246,24 +240,14 @@ def run_through_game(game):
     
 
 
-if __name__ == "__main__":
-    op = OpeningTree()
 
+if __name__ == "__main__":
     #st = StudyTree(import_games.load_study("lichess_study_urusov-gambit_by_remyrouyer_2020.11.21.json"))
+
+    op = OpeningTree()
     games = import_games.load_games("Remy Rouyer.json")
-    num_moves = []
+    import_games.sanitize_png_moves(games)
+    import_games.add_fen_list(games)
     for g in games:
         op.add_game(g)
-        num_moves.append( len(g.get("clean_moves")))
-    
-    nodes = [v for k,v in op.nodes.items()]
-    print(len(num_moves))
-    print(f"{sum(num_moves)=}, average : {sum(num_moves)/len(num_moves)}")
-    
-    print(len(nodes))
 
-
-    for i in range(10):
-        nodes = [n for n in nodes if len(n.children)>=i]
-        print(f"{i}: {len(nodes)}")
-    input("Done")
