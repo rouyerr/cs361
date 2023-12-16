@@ -85,22 +85,22 @@ class Board():
             self.move_number= int(fen_string[5])
         self.init_bitboards()
         return self.board
+    def rank_to_fen(self,rank):
+        empty = 0
+        fen = ''
+        for piece in rank:
+            if piece:
+                if empty:
+                    fen += str(empty)
+                    empty = 0
+                fen += Board.NUMBER_TO_PIECE[piece]
+            else:
+                empty += 1
+        return fen + ('' if not empty else str(empty))
 
     def export_fen(self):
-        def rank_to_fen(rank):
-            empty = 0
-            fen = ''
-            for piece in rank:
-                if piece:
-                    if empty:
-                        fen += str(empty)
-                        empty = 0
-                    fen += Board.NUMBER_TO_PIECE[piece]
-                else:
-                    empty += 1
-            return fen + ('' if not empty else str(empty))
 
-        board_fen = '/'.join(rank_to_fen(rank) for rank in self.reverse_view_board)
+        board_fen = '/'.join(self.rank_to_fen(rank) for rank in self.reverse_view_board)
         turn_fen = 'w' if self.whites_move else 'b'
         castling_fen = ''.join([
             'K' if self.castling_rights & Board.WHITE_KING_CASTLE else '',
@@ -325,7 +325,7 @@ class Board():
         return set_bits
 
     def amb_from(self, from_bbs, to_bb):
-        if bin(from_bbs).count("1")<=1:
+        if (from_bbs & (from_bbs - 1)) == 0:
             return from_bbs
         org_board = self.board.copy()
         to_coord = self.bitboard_to_coordinate(to_bb)
@@ -341,14 +341,14 @@ class Board():
         if len(correct_from_bb) != 1:
             print("AHHHHHHHHH")
         self.board = org_board
+        self.reverse_view_board = self.board[::-1]
         self.init_bitboards()
         return correct_from_bb[0]
     
 
 
     def move_piece(self, from_bb, to_bb):
-        if bin(from_bb).count("1")>1:
-            from_bb = self.amb_from(from_bb, to_bb)
+
         from_coord = self.bitboard_to_coordinate(from_bb)
         to_coord = self.bitboard_to_coordinate(to_bb)
         if self.board[to_coord[1]][to_coord[0]]:
@@ -375,7 +375,7 @@ class Board():
         
 
     def move_rook(self, from_bb, to_bb):
-        if bin(from_bb).count("1")>1:
+        if (from_bb & (from_bb - 1)) == 0:
             from_bb = self.amb_from(from_bb, to_bb)
         if self.whites_move:
             if from_bb == 0x0000000000000080:
@@ -786,7 +786,6 @@ class Board():
                 from_square_bitboard = self.bb_black_king
                 to_square_bitboard = 0x4000000000000000
         if to_square_bitboard & self.king_moves(self.whites_move):
-            from_square_bitboard = self.amb_from(from_square_bitboard, to_square_bitboard)
             if return_bitboard:
                 return (from_square_bitboard, to_square_bitboard)
             return (self.bitboard_to_coordinate(from_square_bitboard), self.bitboard_to_coordinate(to_square_bitboard))
@@ -1162,26 +1161,26 @@ class Board():
 
         knight_bitboard = self.bb_white_knights if white else self.bb_black_knights
         self_occupy = self.bb_white_occupy if white else self.bb_black_occupy
-        attack_bitboard = (knight_bitboard & 0xFCFCFCFCFCFCFC00) >> 10 #left 2 down A
-        attack_bitboard |= (knight_bitboard & 0x003F3F3F3F3F3F3F) << 10 #right2 up  A
-        attack_bitboard |= (knight_bitboard & 0x3F3F3F3F3F3F3F00) >> 6 #right 2 down A
-        attack_bitboard |= (knight_bitboard & 0x00FCFCFCFCFCFCFC) << 6 #left2 up  A
-        attack_bitboard |= (knight_bitboard & 0x7F7F7F7F7F7F0000) >> 15 #down 2 right  A
-        attack_bitboard |= (knight_bitboard & 0x0000FEFEFEFEFEFE) << 15 #up2 left  A
-        attack_bitboard |= (knight_bitboard & 0xFEFEFEFEFEFE0000) >> 17 #down 2 left
-        attack_bitboard |= (knight_bitboard & 0x00007F7F7F7F7F7F) << 17 #up2 right
+        attack_bitboard = (((knight_bitboard & 0xFCFCFCFCFCFCFC00) >> 10) #left 2 down A 
+                        | ((knight_bitboard & 0x003F3F3F3F3F3F3F) << 10) #right2 up  A
+                        | ((knight_bitboard & 0x3F3F3F3F3F3F3F00) >> 6) #right 2 down A
+                        | ((knight_bitboard & 0x00FCFCFCFCFCFCFC) << 6) #left2 up  A
+                        | ((knight_bitboard & 0x7F7F7F7F7F7F0000) >> 15) #down 2 right  A
+                        | ((knight_bitboard & 0x0000FEFEFEFEFEFE) << 15) #up2 left  A
+                        | ((knight_bitboard & 0xFEFEFEFEFEFE0000) >> 17) #down 2 left
+                        | ((knight_bitboard & 0x00007F7F7F7F7F7F) << 17)) #up2 right
         return attack_bitboard & ~self_occupy
 
     def from_knight_move (self, position , white= True):
         knight_bitboard = self.bb_white_knights if white else self.bb_black_knights
-        attack_bitboard = (position & 0xFCFCFCFCFCFCFC00) >> 10 #left 2 down A
-        attack_bitboard |= (position & 0x003F3F3F3F3F3F3F) << 10 #right2 up  A
-        attack_bitboard |= (position & 0x3F3F3F3F3F3F3F00) >> 6 #right 2 down A
-        attack_bitboard |= (position & 0x00FCFCFCFCFCFCFC) << 6 #left2 up  A
-        attack_bitboard |= (position & 0x7F7F7F7F7F7F0000) >> 15 #down 2 right  A
-        attack_bitboard |= (position & 0x0000FEFEFEFEFEFE) << 15 #up2 left  A
-        attack_bitboard |= (position & 0xFEFEFEFEFEFE0000) >> 17 #down 2 left
-        attack_bitboard |= (position & 0x00007F7F7F7F7F7F) << 17 #up2 right
+        attack_bitboard = (((position & 0xFCFCFCFCFCFCFC00) >> 10) #left 2 down A
+                         | ((position & 0x003F3F3F3F3F3F3F) << 10) #right2 up  A
+                         | ((position & 0x3F3F3F3F3F3F3F00) >> 6) #right 2 down A
+                         | ((position & 0x00FCFCFCFCFCFCFC) << 6) #left2 up  A
+                         | ((position & 0x7F7F7F7F7F7F0000) >> 15) #down 2 right  A
+                         | ((position & 0x0000FEFEFEFEFEFE) << 15) #up2 left  A
+                         | ((position & 0xFEFEFEFEFEFE0000) >> 17) #down 2 left
+                         | ((position & 0x00007F7F7F7F7F7F) << 17)) #up2 right
         attack_bitboard &= knight_bitboard
         return attack_bitboard
 
